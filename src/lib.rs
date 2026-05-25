@@ -1,4 +1,4 @@
-use std::{fmt::Display, ptr::NonNull};
+use std::{fmt::Display, mem::MaybeUninit, ptr::NonNull};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
@@ -130,15 +130,14 @@ where
     pub fn new() -> Self {
         SkipList {
             len: 0,
-            forward: vec![None; 10],
+            forward: vec![None; 1],
         }
     }
 
     pub fn insert(&mut self, key: K, value: V) {
         // TODO make array
-        let mut update: Vec<Option<NonNull<[NodePointer<K, V>]>>> =
-            Vec::with_capacity(self.level());
-
+        let mut update: Vec<MaybeUninit<NonNull<[NodePointer<K, V>]>>> =
+            vec![MaybeUninit::uninit(); Self::MAX_LEVEL];
         let level = self.level();
         let mut x_forward = self.forward.as_mut_slice();
 
@@ -158,21 +157,34 @@ where
                     None => break,
                 }
             }
-            update[i] = Some(x_forward.into());
+            update[i].write(x_forward.into());
         }
 
-        let mut x = x_forward[1].unwrap();
-        if unsafe { x.as_ref() }.key == key {
+        // TODO account for root node here
+        let mut x = x_forward[0].unwrap();
+        if let Some(mut x) = x_forward[0]
+            && unsafe { x.as_ref() }.key == key
+        {
             unsafe { x.as_mut() }.value = value;
         } else {
             let new_level = Self::random_level();
             if new_level > self.level() {
                 for i in self.level()..new_level {
-                    update[i] = Some(self.forward.as_mut_slice().into());
+                    update[i].write(self.forward.as_mut_slice().into());
                 }
             }
 
-            // create our new node
+            let new_node = Box::new(Node::new(key, value, &[None]));
+            let new_node = NonNull::new(Box::leak(new_node));
+            let mut new_forward = Vec::with_capacity(self.level());
+            for i in 1..new_level {
+                let target_list = unsafe { update[i].assume_init_mut().as_mut() };
+                let target_node = target_list[i];
+                new_forward.push(target_node);
+                target_list[i] = new_node;
+            }
+            let new_node = unsafe { new_node.unwrap().as_mut() };
+            new_node.forward = new_forward.into_boxed_slice();
         }
     }
 
