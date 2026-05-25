@@ -188,7 +188,37 @@ where
     }
 
     pub fn search(&self, key: K) -> Option<(K, &V)> {
-        None
+        let level = self.level();
+        let mut x_forward = self.forward.as_slice();
+
+        for i in (0..level).rev() {
+            println!("[forward list]\n{}", x_forward.display_forward());
+            loop {
+                match x_forward[i] {
+                    Some(ptr) => {
+                        let node = unsafe { ptr.as_ref() };
+                        if node.key < key {
+                            x_forward = node.forward.as_ref();
+                        } else {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+
+        match x_forward[0] {
+            Some(x) => {
+                let x = unsafe { x.as_ref() };
+                if x.key == key {
+                    Some((key, &x.value))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
     }
 }
 
@@ -212,9 +242,11 @@ mod tests {
         assert_eq!(default_list.len(), 0);
 
         default_list.insert(3i32, "asdf".into());
+        default_list.insert(3i32, "asdf".into());
+        default_list.insert(3i32, "asdf".into());
         println!("{}", default_list.forward.display_forward());
         assert!(!default_list.is_empty());
-        assert_eq!(default_list.len(), 1);
+        assert_eq!(default_list.len(), 3);
         let result = default_list.search(3i32);
         assert!(result.is_some());
         let (key, value) = result.unwrap();
