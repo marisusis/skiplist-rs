@@ -22,7 +22,7 @@ impl<K, V> Node<K, V> {
     fn new(key: K, value: V, forward: &[NodePointer<K, V>]) -> Self {
         Node {
             key,
-            value: value,
+            value,
             forward: Box::from(forward),
         }
     }
@@ -168,17 +168,12 @@ where
 
         for i in (0..level).rev() {
             // TODO unwrap unchecked
-            loop {
-                match x_forward[i] {
-                    Some(mut ptr) => {
-                        let node = unsafe { ptr.as_mut() };
-                        if node.key < key {
-                            x_forward = node.forward.as_mut();
-                        } else {
-                            break;
-                        }
-                    }
-                    None => break,
+            while let Some(mut ptr) = x_forward[i] {
+                let node = unsafe { ptr.as_mut() };
+                if node.key < key {
+                    x_forward = node.forward.as_mut();
+                } else {
+                    break;
                 }
             }
             update[i].write(x_forward.into());
@@ -191,9 +186,13 @@ where
         } else {
             let new_level = Self::random_level();
             if new_level > self.level() {
-                for i in self.level()..new_level {
-                    update[i].write(self.forward.as_mut_slice().into());
-                }
+                update
+                    .iter_mut()
+                    .skip(self.level())
+                    .take(new_level)
+                    .for_each(|e| {
+                        e.write(self.forward.as_mut_slice().into());
+                    });
             }
 
             let new_node = Box::new(Node::new(key, value, &[None]));
@@ -222,17 +221,12 @@ where
 
         for i in (0..level).rev() {
             // println!("[forward list]\n{}", x_forward.display_forward());
-            loop {
-                match x_forward[i] {
-                    Some(ptr) => {
-                        let node = unsafe { ptr.as_ref() };
-                        if node.key < key {
-                            x_forward = node.forward.as_ref();
-                        } else {
-                            break;
-                        }
-                    }
-                    None => break,
+            while let Some(ptr) = x_forward[i] {
+                let node = unsafe { ptr.as_ref() };
+                if node.key < key {
+                    x_forward = node.forward.as_ref();
+                } else {
+                    break;
                 }
             }
         }
@@ -259,17 +253,12 @@ where
 
         for i in (0..level).rev() {
             // TODO unwrap unchecked
-            loop {
-                match x_forward[i] {
-                    Some(mut ptr) => {
-                        let node = unsafe { ptr.as_mut() };
-                        if node.key < key {
-                            x_forward = node.forward.as_mut();
-                        } else {
-                            break;
-                        }
-                    }
-                    None => break,
+            while let Some(mut ptr) = x_forward[i] {
+                let node = unsafe { ptr.as_mut() };
+                if node.key < key {
+                    x_forward = node.forward.as_mut();
+                } else {
+                    break;
                 }
             }
             update[i].write(x_forward.into());
