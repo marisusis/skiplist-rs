@@ -160,8 +160,6 @@ where
             update[i].write(x_forward.into());
         }
 
-        // TODO account for root node here
-        let mut x = x_forward[0].unwrap();
         if let Some(mut x) = x_forward[0]
             && unsafe { x.as_ref() }.key == key
         {
@@ -177,7 +175,7 @@ where
             let new_node = Box::new(Node::new(key, value, &[None]));
             let new_node = NonNull::new(Box::leak(new_node));
             let mut new_forward = Vec::with_capacity(self.level());
-            for i in 1..new_level {
+            for i in 0..new_level {
                 let target_list = unsafe { update[i].assume_init_mut().as_mut() };
                 let target_node = target_list[i];
                 new_forward.push(target_node);
@@ -186,6 +184,7 @@ where
             let new_node = unsafe { new_node.unwrap().as_mut() };
             new_node.forward = new_forward.into_boxed_slice();
         }
+        self.len += 1;
     }
 
     pub fn search(&self, key: K) -> Option<(K, &V)> {
@@ -213,6 +212,7 @@ mod tests {
         assert_eq!(default_list.len(), 0);
 
         default_list.insert(3i32, "asdf".into());
+        println!("{}", default_list.forward.display_forward());
         assert!(!default_list.is_empty());
         assert_eq!(default_list.len(), 1);
         let result = default_list.search(3i32);
