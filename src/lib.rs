@@ -136,7 +136,8 @@ where
 
     pub fn insert(&mut self, key: K, value: V) {
         // TODO make array
-        let mut update: Vec<NodePointer<K, V>> = vec![None; Self::MAX_LEVEL];
+        let mut update: Vec<Option<NonNull<[NodePointer<K, V>]>>> =
+            Vec::with_capacity(self.level());
 
         let level = self.level();
         let mut x_forward = self.forward.as_mut_slice();
@@ -150,14 +151,29 @@ where
                         let node = unsafe { ptr.as_mut() };
                         if node.key < key {
                             x_forward = node.forward.as_mut();
+                        } else {
+                            break;
                         }
                     }
                     None => break,
                 }
             }
+            update[i] = Some(x_forward.into());
         }
 
-        let x = x_forward[1];
+        let mut x = x_forward[1].unwrap();
+        if unsafe { x.as_ref() }.key == key {
+            unsafe { x.as_mut() }.value = value;
+        } else {
+            let new_level = Self::random_level();
+            if new_level > self.level() {
+                for i in self.level()..new_level {
+                    update[i] = Some(self.forward.as_mut_slice().into());
+                }
+            }
+
+            // create our new node
+        }
     }
 
     pub fn search(&self, key: K) -> Option<(K, &V)> {
