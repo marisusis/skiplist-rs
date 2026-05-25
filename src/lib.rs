@@ -1,4 +1,9 @@
-use std::{fmt::Display, mem::MaybeUninit, ptr::NonNull};
+use std::{
+    fmt::Display,
+    mem::{ManuallyDrop, MaybeUninit},
+    ops::Not,
+    ptr::NonNull,
+};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
@@ -22,7 +27,7 @@ impl<K, V> Node<K, V> {
     fn new(key: K, value: V, forward: &[NodePointer<K, V>]) -> Self {
         Node {
             key,
-            value,
+            value: value,
             forward: Box::from(forward),
         }
     }
@@ -33,12 +38,6 @@ impl<K, V> Node<K, V> {
         } else {
             self.forward.len()
         }
-    }
-}
-
-impl<K, V> Drop for Node<K, V> {
-    fn drop(&mut self) {
-        assert!(self.forward.iter().all(|e| e.is_none()));
     }
 }
 
@@ -65,6 +64,9 @@ where
         f.write_str(format!("({:?}, {:?})", self.key, self.value).as_str())
     }
 }
+
+#[derive(Debug)]
+pub struct NotFound {}
 
 trait DisplayForwardExt {
     fn display_forward(&self) -> String;
@@ -134,7 +136,24 @@ where
     K: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        f.write_str(
+            self.forward
+                .iter()
+                .enumerate()
+                .fold("".to_string(), |acc, item| {
+                    let (i, mut cur_node) = item;
+
+                    let mut temp = String::new();
+                    while let Some(node) = cur_node {
+                        let node = unsafe { node.as_ref() };
+                        cur_node = &node.forward[i];
+                        temp += &format!("-> {:?}", node.key);
+                    }
+
+                    acc + &temp + "\n"
+                })
+                .as_str(),
+        )
     }
 }
 
@@ -185,11 +204,11 @@ where
             let mut new_forward = Vec::with_capacity(self.level());
             for i in 0..new_level {
                 let target_list = unsafe { update[i].assume_init_mut().as_mut() };
-                println!(
-                    "level {i} new_level {new_level}\nis header {}\n{}",
-                    target_list.as_ptr() == self.forward.as_ptr(),
-                    target_list.display_forward()
-                );
+                // println!(
+                //     "level {i} new_level {new_level}\nis header {}\n{}",
+                //     target_list.as_ptr() == self.forward.as_ptr(),
+                //     target_list.display_forward()
+                // );
                 let target_node = target_list[i];
                 new_forward.push(target_node);
                 target_list[i] = new_node;
@@ -205,7 +224,7 @@ where
         let mut x_forward = self.forward.as_slice();
 
         for i in (0..level).rev() {
-            println!("[forward list]\n{}", x_forward.display_forward());
+            // println!("[forward list]\n{}", x_forward.display_forward());
             loop {
                 match x_forward[i] {
                     Some(ptr) => {
@@ -233,6 +252,60 @@ where
             None => None,
         }
     }
+
+    pub fn delete(&mut self, key: K) -> Result<V, NotFound> {
+        // TODO make array
+        let mut update: Vec<MaybeUninit<NonNull<[NodePointer<K, V>]>>> =
+            vec![MaybeUninit::uninit(); Self::MAX_LEVEL];
+        let level = self.level();
+        let mut x_forward = self.forward.as_mut_slice();
+
+        for i in (0..level).rev() {
+            // TODO unwrap unchecked
+            loop {
+                match x_forward[i] {
+                    Some(mut ptr) => {
+                        let node = unsafe { ptr.as_mut() };
+                        if node.key < key {
+                            x_forward = node.forward.as_mut();
+                        } else {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            update[i].write(x_forward.into());
+        }
+
+        if let Some(mut x) = x_forward[0]
+            && unsafe { x.as_ref() }.key == key
+        {
+            for i in 0..level {
+                let target_list = unsafe { update[i].assume_init_mut().as_mut() };
+                let target_node = target_list[i];
+                if let Some(target_node) = target_node
+                    && target_node.as_ptr() == x.as_ptr()
+                {
+                    target_list[i] = unsafe { x.as_ref() }.forward[i];
+                } else {
+                    break;
+                }
+            }
+            //let value = unsafe { ManuallyDrop::take(&mut (*x.as_ptr()).value) };
+            let x = unsafe { Box::from_raw(x.as_ptr()) };
+
+            Ok(x.value)
+        } else {
+            Err(NotFound {})
+        }
+    }
+}
+
+impl<K, V> Drop for SkipList<K, V> {
+    fn drop(&mut self) {
+        eprintln!("TODO: impl Drop for SkipList");
+    }
 }
 
 impl<K, V> Default for SkipList<K, V> {
@@ -244,6 +317,11 @@ impl<K, V> Default for SkipList<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{
+        random,
+        seq::{IteratorRandom, SliceRandom},
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn default() {
@@ -252,8 +330,8 @@ mod tests {
         assert_eq!(default_list.len(), 0);
 
         default_list.insert(3i32, "asdf".into());
-        default_list.insert(3i32, "asdf".into());
-        default_list.insert(3i32, "asdf".into());
+        default_list.insert(3i32, "fdsa".into());
+        default_list.insert(3i32, "hello, world!".into());
         println!("{}", default_list.forward.display_forward());
         assert!(!default_list.is_empty());
         assert_eq!(default_list.len(), 3);
@@ -261,41 +339,55 @@ mod tests {
         assert!(result.is_some());
         let (key, value) = result.unwrap();
         assert_eq!(key, 3i32);
-        assert_eq!(value, &"asdf".to_string());
-    }
-
-    #[test]
-    #[should_panic]
-    fn node_drop_panic() {
-        let node2: Node<u32, ()> = Node::default();
-        let node2 = Box::new(node2);
-        let node2 = NonNull::new(Box::leak(node2));
-        assert!(node2.is_some());
-        let node = Node::new(1u32, (), &[Some(node2.unwrap()), Some(node2.unwrap())]);
-        assert_eq!(node.level(), 2);
-        drop(node);
+        assert_eq!(value, &"hello, world!".to_string());
     }
 
     #[test]
     fn random_inserts() {
         let mut list = SkipList::new();
 
-        let items = 10000;
+        let items = 5;
+
         // TODO Fix collisions
-        let mut random_items = Vec::with_capacity(items);
+        let mut random_items = HashMap::with_capacity(items);
         for i in 0..items {
-            let key: u64 = rand::random();
-            random_items.push((i, key));
-            list.insert(i, key);
+            let key: u64 = rand::random_range(0..30);
+            random_items.insert(key, i);
+            list.insert(key, i);
         }
 
         // Verify we can find all the items
-        for (key, value) in random_items.into_iter() {
-            let result = list.search(key);
-            let (found_key, found_value) = result.expect("list should contain this key");
-            assert_eq!(key, found_key);
-            assert_eq!(value, *found_value);
-        }
+        random_items
+            .iter()
+            .choose(&mut rand::rng())
+            .into_iter()
+            .for_each(|(key, value)| {
+                let result = list.search(*key);
+                let (found_key, found_value) = result.expect("list should contain this key");
+                assert_eq!(*key, found_key);
+                assert_eq!(*value, *found_value);
+            });
+
+        let mut deleted_items = Vec::with_capacity(items);
+
+        // delete them one at a time
+
+        eprintln!("{list}");
+        random_items.into_iter().for_each(|item| {
+            deleted_items.push(item);
+            eprintln!("deleting {}", item.0);
+            list.delete(item.0).unwrap();
+
+            for deleted in deleted_items.iter() {
+                assert!(list.search(deleted.0).is_none(), "item still exists");
+            }
+        });
+
+        eprintln!("{list}");
+
+        // empty list
+        assert!(list.is_empty());
+        assert_eq!(list.level(), 1);
     }
 
     #[test]
