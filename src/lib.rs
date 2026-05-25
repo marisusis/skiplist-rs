@@ -109,6 +109,13 @@ impl<K, V> SkipList<K, V> {
 }
 
 impl<K, V> SkipList<K, V> {
+    pub fn new() -> Self {
+        SkipList {
+            len: 0,
+            forward: vec![None; Self::MAX_LEVEL],
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -122,18 +129,20 @@ impl<K, V> SkipList<K, V> {
     }
 }
 
+impl<K, V> std::fmt::Display for SkipList<K, V>
+where
+    K: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+
 impl<K, V> SkipList<K, V>
 where
     K: Ord + Eq + std::fmt::Debug,
     V: std::fmt::Debug,
 {
-    pub fn new() -> Self {
-        SkipList {
-            len: 0,
-            forward: vec![None; 1],
-        }
-    }
-
     pub fn insert(&mut self, key: K, value: V) {
         // TODO make array
         let mut update: Vec<MaybeUninit<NonNull<[NodePointer<K, V>]>>> =
@@ -141,9 +150,8 @@ where
         let level = self.level();
         let mut x_forward = self.forward.as_mut_slice();
 
-        for i in (0..level).rev().inspect(|l| println!("for level {l}")) {
+        for i in (0..level).rev() {
             // TODO unwrap unchecked
-            println!("[forward list]\n{}", x_forward.display_forward());
             loop {
                 match x_forward[i] {
                     Some(mut ptr) => {
@@ -177,6 +185,11 @@ where
             let mut new_forward = Vec::with_capacity(self.level());
             for i in 0..new_level {
                 let target_list = unsafe { update[i].assume_init_mut().as_mut() };
+                println!(
+                    "level {i} new_level {new_level}\nis header {}\n{}",
+                    target_list.as_ptr() == self.forward.as_ptr(),
+                    target_list.display_forward()
+                );
                 let target_node = target_list[i];
                 new_forward.push(target_node);
                 target_list[i] = new_node;
@@ -224,10 +237,7 @@ where
 
 impl<K, V> Default for SkipList<K, V> {
     fn default() -> Self {
-        Self {
-            len: 0,
-            forward: vec![None; 1],
-        }
+        SkipList::new()
     }
 }
 
@@ -270,13 +280,13 @@ mod tests {
     fn random_inserts() {
         let mut list = SkipList::new();
 
-        let items = 100;
+        let items = 10000;
         // TODO Fix collisions
-        let mut random_items = Vec::<(u64, usize)>::with_capacity(items);
+        let mut random_items = Vec::with_capacity(items);
         for i in 0..items {
-            let key = rand::random();
-            random_items.push((key, i));
-            list.insert(key, i);
+            let key: u64 = rand::random();
+            random_items.push((i, key));
+            list.insert(i, key);
         }
 
         // Verify we can find all the items
