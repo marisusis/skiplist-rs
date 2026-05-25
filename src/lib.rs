@@ -1,9 +1,4 @@
-use std::{
-    fmt::Display,
-    mem::{ManuallyDrop, MaybeUninit},
-    ops::Not,
-    ptr::NonNull,
-};
+use std::{mem::MaybeUninit, ptr::NonNull};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
@@ -32,6 +27,7 @@ impl<K, V> Node<K, V> {
         }
     }
 
+    #[allow(unused)]
     fn level(&self) -> usize {
         if self.forward.is_empty() {
             1
@@ -68,6 +64,7 @@ where
 #[derive(Debug)]
 pub struct NotFound {}
 
+#[allow(unused)]
 trait DisplayForwardExt {
     fn display_forward(&self) -> String;
 }
@@ -278,7 +275,7 @@ where
             update[i].write(x_forward.into());
         }
 
-        if let Some(mut x) = x_forward[0]
+        if let Some(x) = x_forward[0]
             && unsafe { x.as_ref() }.key == key
         {
             for i in 0..level {
@@ -317,10 +314,7 @@ impl<K, V> Default for SkipList<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{
-        random,
-        seq::{IteratorRandom, SliceRandom},
-    };
+    use rand::seq::IteratorRandom;
     use std::collections::HashMap;
 
     #[test]
@@ -346,12 +340,12 @@ mod tests {
     fn random_inserts() {
         let mut list = SkipList::new();
 
-        let items = 5;
+        let items = 1000;
 
         // TODO Fix collisions
         let mut random_items = HashMap::with_capacity(items);
         for i in 0..items {
-            let key: u64 = rand::random_range(0..30);
+            let key: u64 = rand::random_range(0..3000);
             random_items.insert(key, i);
             list.insert(key, i);
         }
