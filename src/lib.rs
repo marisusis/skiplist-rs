@@ -1,3 +1,4 @@
+use rand::{RngExt, SeedableRng};
 use std::{mem::MaybeUninit, ptr::NonNull};
 
 pub fn add(left: u64, right: u64) -> u64 {
@@ -90,6 +91,7 @@ where
 pub struct SkipList<K, V> {
     len: usize,
     forward: Vec<NodePointer<K, V>>,
+    rng: rand::rngs::StdRng,
 }
 
 /// Private fields
@@ -97,9 +99,9 @@ impl<K, V> SkipList<K, V> {
     const MAX_LEVEL: usize = 29;
     const P: f64 = 0.5;
 
-    fn random_level() -> usize {
+    fn random_level(&mut self) -> usize {
         let mut new_level = 1;
-        while rand::random::<f64>() < Self::P {
+        while self.rng.random::<f64>() < Self::P {
             new_level += 1;
         }
 
@@ -112,6 +114,7 @@ impl<K, V> SkipList<K, V> {
         SkipList {
             len: 0,
             forward: vec![None; Self::MAX_LEVEL],
+            rng: rand::rngs::StdRng::seed_from_u64(123u64),
         }
     }
 
@@ -184,7 +187,7 @@ where
         {
             unsafe { x.as_mut() }.value = value;
         } else {
-            let new_level = Self::random_level();
+            let new_level = self.random_level();
             if new_level > self.level() {
                 update
                     .iter_mut()
