@@ -1,5 +1,8 @@
 use rand::SeedableRng;
-use std::{intrinsics::mir::PtrMetadata, mem::MaybeUninit, ptr::NonNull};
+use std::{
+    mem::{self, MaybeUninit},
+    ptr::NonNull,
+};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
@@ -20,15 +23,7 @@ struct Node<K, V> {
 }
 
 impl<K, V> Node<K, V> {
-    fn new(key: K, value: V, forward: &[NodePointer<K, V>]) -> Self {
-        Node {
-            key: MaybeUninit::new(key),
-            value: MaybeUninit::new(value),
-            forward: Box::from(forward),
-        }
-    }
-
-    fn new2(key: K, value: V, levels: usize) -> Self {
+    fn new(key: K, value: V, levels: usize) -> Self {
         Node {
             key: MaybeUninit::new(key),
             value: MaybeUninit::new(value),
@@ -46,20 +41,6 @@ impl<K, V> Node<K, V> {
     }
 }
 
-// impl<K, V> Default for Node<K, V>
-// where
-//     K: Default,
-//     V: Default,
-// {
-//     fn default() -> Self {
-//         Self {
-//             key: Default::default(),
-//             value: Default::default(),
-//             forward: Default::default(),
-//         }
-//     }
-// }
-
 impl<K, V> std::fmt::Display for Node<K, V>
 where
     K: std::fmt::Debug,
@@ -67,6 +48,12 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(format!("({:?}, {:?})", self.key, self.value).as_str())
+    }
+}
+
+impl<K, V> Drop for Node<K, V> {
+    fn drop(&mut self) {
+        eprintln!("node dropped with key {:?}", { self.key.as_ptr() });
     }
 }
 
@@ -145,7 +132,12 @@ impl<K, V> SkipList<K, V> {
     }
 
     pub fn level(&self) -> usize {
-        self.as_ref().level()
+        unsafe { self.head.as_ref() }
+            .forward
+            .iter()
+            .filter(|e| e.is_some())
+            .count()
+            .max(1)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -220,8 +212,7 @@ where
                     });
             }
 
-            let mut new_node =
-                NonNull::from(Box::leak(Box::new(Node::new2(key, value, new_level))));
+            let mut new_node = NonNull::from(Box::leak(Box::new(Node::new(key, value, new_level))));
             for i in 0..new_level {
                 let mut target_node = update[i];
                 // println!(
@@ -287,16 +278,21 @@ where
             && *unsafe { x.as_ref().key.assume_init_ref() } == key
         {
             for i in 0..level {
-                let target_node = &mut unsafe { update[i].as_mut() }.forward[0];
+                let target_node = &mut unsafe { update[i].as_mut() }.forward[i];
                 if let Some(t) = target_node
                     && t.as_ptr() == x.as_ptr()
-                {}
+                {
+                    let old = mem::replace(target_node, unsafe { x.as_ref() }.forward[i]);
+                } else {
+                    break;
+                }
             }
 
             //let value = unsafe { ManuallyDrop::take(&mut (*x.as_ptr()).value) };
-            let x = unsafe { Box::from_raw(x.as_ptr()) };
+            let mut node: Box<Node<K, V>> = unsafe { Box::from_raw(x.as_ptr()) };
+            unsafe { node.key.assume_init_drop() };
 
-            Some(unsafe { x.value.assume_init() })
+            Some(unsafe { node.value.assume_init_read() })
         } else {
             None
         }
@@ -306,6 +302,16 @@ where
 impl<K, V> Drop for SkipList<K, V> {
     fn drop(&mut self) {
         eprintln!("TODO: impl Drop for SkipList");
+        let mut maybe_next_node = unsafe { self.head.as_ref() }.forward[0];
+        while let Some(node_ptr) = maybe_next_node {
+            let mut node: Box<Node<K, V>> = unsafe { Box::from_raw(node_ptr.as_ptr()) };
+            unsafe {
+                node.key.assume_init_drop();
+                node.value.assume_init_drop();
+            }
+            maybe_next_node = node.forward[0];
+        }
+        let _ = unsafe { Box::from_raw(self.head.as_ptr()) };
     }
 }
 
@@ -318,7 +324,7 @@ impl<K, V> Default for SkipList<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::seq::IteratorRandom;
+    use rand::{RngExt, seq::IteratorRandom};
     use std::collections::HashMap;
 
     #[test]
@@ -342,6 +348,8 @@ mod tests {
 
     #[test]
     fn random_inserts() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1284);
+        let mut rng = rand::rng();
         let mut list = SkipList::new();
 
         let items = 10;
@@ -349,7 +357,7 @@ mod tests {
         // TODO Fix collisions
         let mut random_items = HashMap::with_capacity(items);
         for i in 0..items {
-            let key: u64 = rand::random_range(0..30);
+            let key: u64 = rng.random_range(0..30);
             random_items.insert(key, i);
             list.insert(key, i);
             eprintln!("{list}");
@@ -358,7 +366,7 @@ mod tests {
         // Verify we can find all the items
         random_items
             .iter()
-            .choose(&mut rand::rng())
+            .choose(&mut rng)
             .into_iter()
             .for_each(|(key, value)| {
                 let result = list.search(*key);
@@ -384,7 +392,7 @@ mod tests {
         });
 
         eprintln!("{list}");
-        panic!("WHAT IS HAPPENING");
+        //panic!("WHAT IS HAPPENING");
 
         // empty list
         assert!(list.is_empty());
