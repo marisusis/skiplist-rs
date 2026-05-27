@@ -199,7 +199,12 @@ where
         if let Some(mut x) = unsafe { x.as_ref() }.forward[0]
             && *unsafe { x.as_ref().key.assume_init_ref() } == key
         {
-            unsafe { x.as_mut() }.value.write(value);
+            unsafe {
+                let x: &mut Node<K, V> = x.as_mut();
+                x.value.assume_init_drop();
+                // TODO return old value?
+                x.value.write(value);
+            }
         } else {
             let new_level = self.random_level();
             if new_level > self.level() {
@@ -352,7 +357,7 @@ mod tests {
         let mut rng = rand::rng();
         let mut list = SkipList::new();
 
-        let items = 10;
+        let items = 1000000;
 
         // TODO Fix collisions
         let mut random_items = HashMap::with_capacity(items);
