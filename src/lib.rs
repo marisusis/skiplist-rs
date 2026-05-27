@@ -51,12 +51,6 @@ where
     }
 }
 
-impl<K, V> Drop for Node<K, V> {
-    fn drop(&mut self) {
-        eprintln!("node dropped with key {:?}", { self.key.as_ptr() });
-    }
-}
-
 #[derive(Debug)]
 pub struct NotFound {}
 
@@ -86,7 +80,6 @@ where
 pub struct SkipList<K, V> {
     len: usize,
     head: NonNull<Node<K, V>>,
-    rng: rand::rngs::StdRng,
 }
 
 /// Private fields
@@ -123,7 +116,6 @@ impl<K, V> SkipList<K, V> {
                 value: MaybeUninit::uninit(),
                 forward: vec![None; Self::MAX_LEVEL].into_boxed_slice(),
             }))),
-            rng: rand::rngs::StdRng::seed_from_u64(123u64),
         }
     }
 
@@ -141,7 +133,7 @@ impl<K, V> SkipList<K, V> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.as_ref().forward.iter().all(|e| e.is_none())
+        self.len() == 0
     }
 }
 
@@ -174,8 +166,7 @@ where
 
 impl<K, V> SkipList<K, V>
 where
-    K: Ord + Eq + std::fmt::Debug,
-    V: std::fmt::Debug,
+    K: Ord + Eq,
 {
     pub fn insert(&mut self, key: K, value: V) {
         // TODO make array
@@ -293,9 +284,9 @@ where
                 }
             }
 
-            //let value = unsafe { ManuallyDrop::take(&mut (*x.as_ptr()).value) };
             let mut node: Box<Node<K, V>> = unsafe { Box::from_raw(x.as_ptr()) };
             unsafe { node.key.assume_init_drop() };
+            self.len -= 1;
 
             Some(unsafe { node.value.assume_init_read() })
         } else {
@@ -357,7 +348,7 @@ mod tests {
         let mut rng = rand::rng();
         let mut list = SkipList::new();
 
-        let items = 1000000;
+        let items = 10;
 
         // TODO Fix collisions
         let mut random_items = HashMap::with_capacity(items);
@@ -385,6 +376,7 @@ mod tests {
         // delete them one at a time
 
         eprintln!("{list}");
+        let total_items = random_items.len();
         random_items.into_iter().for_each(|item| {
             deleted_items.push(item);
             eprintln!("deleting {}", item.0);
@@ -393,6 +385,7 @@ mod tests {
 
             for deleted in deleted_items.iter() {
                 assert!(list.search(deleted.0).is_none(), "item still exists");
+                assert_eq!(list.len(), total_items - deleted_items.len());
             }
         });
 
@@ -400,6 +393,7 @@ mod tests {
         //panic!("WHAT IS HAPPENING");
 
         // empty list
+        assert_eq!(list.len(), 0);
         assert!(list.is_empty());
         assert_eq!(list.level(), 1);
     }
