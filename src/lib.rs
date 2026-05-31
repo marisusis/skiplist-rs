@@ -3,7 +3,7 @@ use std::{
     borrow::Borrow,
     marker::PhantomData,
     mem::{self, MaybeUninit, offset_of},
-    ptr::{NonNull, addr_of_mut},
+    ptr::NonNull,
 };
 
 pub fn add(left: u64, right: u64) -> u64 {
@@ -145,14 +145,6 @@ impl<K, V> Node<K, V> {
         NonNull::new(node).expect("allocation was null")
     }
 
-    fn forward_list(&self) -> &[NodePointer<K, V>] {
-        unsafe { NodeHead::<K, V>::forward_list_inner(NonNull::from_ref(&self.head)) }
-    }
-
-    fn forward_list_mut(&mut self) -> &mut [NodePointer<K, V>] {
-        unsafe { NodeHead::<K, V>::forward_list_mut_inner(NonNull::from_mut(&mut self.head)) }
-    }
-
     /// The `NodeHead` must have been allocated as part of a `Node`.
     unsafe fn from_head(head: NonNull<NodeHead<K, V>>) -> NonNull<Self> {
         unsafe { head.byte_sub(offset_of!(Node<K, V>, head)).cast() }
@@ -162,11 +154,6 @@ impl<K, V> Node<K, V> {
         let layout = Layout::new::<Self>();
         let (layout, offset) = layout.extend(Layout::array::<NodePointer<K, V>>(levels)?)?;
         Ok((layout.pad_to_align(), offset))
-    }
-
-    #[allow(unused)]
-    fn level(&self) -> usize {
-        self.head.level
     }
 }
 
@@ -202,33 +189,7 @@ impl<K, V> NodePtrExt<K, V> for NonNull<Node<K, V>> {
 //         f.write_str(format!("({:?}, {:?})", self.key, self.value).as_str())
 //     }
 // }
-//
-// #[derive(Debug)]
-// pub struct NotFound {}
-//
-// #[allow(unused)]
-// trait DisplayForwardExt {
-//     fn display_forward(&self) -> String;
-// }
-//
-// impl<K, V> DisplayForwardExt for [Option<NonNull<Node<K, V>>>]
-// where
-//     K: std::fmt::Debug,
-//     V: std::fmt::Debug,
-// {
-//     fn display_forward(&self) -> String {
-//         self.iter()
-//             .enumerate()
-//             .fold("".to_string(), |acc, e| match e {
-//                 (i, Some(ptr)) => {
-//                     let node = unsafe { ptr.as_ref() };
-//                     acc + format!("level {i}: {node}\n").as_str()
-//                 }
-//                 (i, None) => acc + format!("level {i}: ---\n").as_str(),
-//             })
-//     }
-// }
-//
+
 pub struct SkipList<K, V> {
     len: usize,
     level: usize,
@@ -329,7 +290,7 @@ where
             update[i] = x;
         }
 
-        if let Some(mut x) = unsafe { x.forward_list() }[0]
+        if let Some( x) = unsafe { x.forward_list() }[0]
             && unsafe { Node::from_head(x).as_ref() }.key == key
         {
             unsafe {
@@ -369,10 +330,10 @@ where
         }
     }
 
-    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V>
+    pub fn get<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Ord + Eq,
+        Q: Ord + Eq + ?Sized,
     {
         let level = self.level();
 
@@ -481,7 +442,7 @@ impl<K, V> Drop for SkipList<K, V> {
             }
         }
 
-        // SAFETY: self.head is a valid `NodeHead` instance with corresponding layout 
+        // SAFETY: self.head is a valid `NodeHead` instance with corresponding layout
         unsafe {
             std::alloc::dealloc(self.head.as_ptr().cast(), self.head.layout());
         }
