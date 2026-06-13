@@ -1,3 +1,7 @@
+//! Skiplist implementation
+
+#![deny(missing_docs)]
+
 use std::{
     alloc::Layout,
     borrow::Borrow,
@@ -6,24 +10,17 @@ use std::{
     ptr::NonNull,
 };
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-// struct Link<K, V> {
-//     width: usize,
-//     target: NonNull<Node<K, V>>,
-// }
-//
-
-trait ForwardList<K, V> {
-    unsafe fn forward_list<'a>(self) -> &'a [NodePointer<K, V>];
-    unsafe fn forward_list_mut<'a>(self) -> &'a mut [NodePointer<K, V>];
-}
-
+/// This is a helper trait to improve the ergonomics of working with `Node` and `NodeHead`
+/// in the same code. Using this trait, the caller can use the same methods for both types.
 trait NodePtrExt<K, V> {
     unsafe fn into_head(self) -> NonNull<NodeHead<K, V>>;
     unsafe fn layout(self) -> Layout;
+
+    /// Returns a shared reference to the forward list associated with `self`
+    unsafe fn forward_list<'a>(self) -> &'a [NodePointer<K, V>];
+
+    /// Returns an exclusive reference to the forward list associated with `self`
+    unsafe fn forward_list_mut<'a>(self) -> &'a mut [NodePointer<K, V>];
 }
 
 type NodePointer<K, V> = Option<NonNull<NodeHead<K, V>>>;
@@ -40,32 +37,39 @@ impl<K, V> NodeHead<K, V> {
         let (layout, array_offset) = layout.extend(Layout::array::<NodePointer<K, V>>(levels)?)?;
         let layout = layout.pad_to_align();
 
+        let the_memory = unsafe { std::alloc::alloc(layout) };
+        assert!(!the_memory.is_null());
         unsafe {
-            let the_memory = std::alloc::alloc(layout);
-            assert!(!the_memory.is_null());
             std::ptr::write(
                 the_memory as *mut Self,
                 NodeHead {
                     level: levels,
                     _phantom: PhantomData,
                 },
-            );
+            )
+        };
 
-            let array_ptr = the_memory.add(array_offset) as *mut MaybeUninit<NodePointer<K, V>>;
-            let array = std::slice::from_raw_parts_mut(array_ptr, levels);
-            array.fill(MaybeUninit::new(None));
+        let array_ptr =
+            unsafe { the_memory.add(array_offset) as *mut MaybeUninit<NodePointer<K, V>> };
+        let array = unsafe { std::slice::from_raw_parts_mut(array_ptr, levels) };
+        array.fill(MaybeUninit::new(None));
 
-            Ok(NonNull::new_unchecked(the_memory.cast()))
-        }
+        Ok(unsafe { NonNull::new_unchecked(the_memory.cast()) })
     }
 
     const fn array_offset() -> usize {
         let size = size_of::<Self>();
         let align = align_of::<NodePointer<K, V>>();
+        // Bitbanging array offset considering alignment of NodePointer
+        // Add align - 1 to size, pushing it above an align boundry
+        // Then we round down by zeroing out the least significant bits of the value
+        // This gives us `size` rounded up to a multiple of `align`
+        // (this of course, only works if we are working with multiples of two)
         (size + align - 1) & !(align - 1)
     }
 
-    /// Array of `NodePointer<K, V>` must be present after `level` in memory
+    /// Given a valid pointer to a `NodeHead`, returns a shared reference to the forward list.
+    /// An array of `NodePointer<K, V>` *must* be present after `level` in memory.
     unsafe fn forward_list_inner<'a>(head: NonNull<Self>) -> &'a [NodePointer<K, V>] {
         unsafe {
             let array_ptr: NonNull<NodePointer<K, V>> = head.byte_add(Self::array_offset()).cast();
@@ -73,7 +77,8 @@ impl<K, V> NodeHead<K, V> {
         }
     }
 
-    /// Array of `NodePointer<K, V>` must be present after `level` in memory
+    /// Given a valid pointer to a `NodeHead`, returns an exclusive reference to the forward list.
+    /// An array of `NodePointer<K, V>` *must* be present after `level` in memory.
     unsafe fn forward_list_mut_inner<'a>(head: NonNull<Self>) -> &'a mut [NodePointer<K, V>] {
         unsafe {
             let array_ptr: NonNull<NodePointer<K, V>> = head.byte_add(Self::array_offset()).cast();
@@ -82,7 +87,7 @@ impl<K, V> NodeHead<K, V> {
     }
 }
 
-impl<K, V> ForwardList<K, V> for NonNull<NodeHead<K, V>> {
+impl<K, V> NodePtrExt<K, V> for NonNull<NodeHead<K, V>> {
     unsafe fn forward_list<'a>(self) -> &'a [NodePointer<K, V>] {
         unsafe { NodeHead::forward_list_inner(self) }
     }
@@ -90,9 +95,7 @@ impl<K, V> ForwardList<K, V> for NonNull<NodeHead<K, V>> {
     unsafe fn forward_list_mut<'a>(self) -> &'a mut [NodePointer<K, V>] {
         unsafe { NodeHead::forward_list_mut_inner(self) }
     }
-}
 
-impl<K, V> NodePtrExt<K, V> for NonNull<NodeHead<K, V>> {
     unsafe fn into_head(self) -> NonNull<NodeHead<K, V>> {
         self
     }
@@ -100,7 +103,7 @@ impl<K, V> NodePtrExt<K, V> for NonNull<NodeHead<K, V>> {
     unsafe fn layout(self) -> Layout {
         unsafe {
             let levels = self.as_ref().level;
-            let layout = Layout::new::<Self>();
+            let layout = Layout::new::<NodeHead<K, V>>();
             let (layout, _) = layout
                 .extend(Layout::array::<NodePointer<K, V>>(levels).unwrap_unchecked())
                 .unwrap_unchecked();
@@ -117,6 +120,9 @@ struct Node<K, V> {
 }
 
 impl<K, V> Node<K, V> {
+    /// Creates a skip list node with the given parameters.
+    ///
+    /// An array of `levels` levels will be allocated after the [`NodeHead`] field.
     fn new(key: K, value: V, levels: usize) -> NonNull<Self> {
         assert_ne!(levels, 0, "node must have at least 1 level");
         let (layout, array_offset) = Self::layout(levels).unwrap();
@@ -145,19 +151,21 @@ impl<K, V> Node<K, V> {
         NonNull::new(node).expect("allocation was null")
     }
 
-    /// The `NodeHead` must have been allocated as part of a `Node`.
+    /// Converts a [`NodeHead`] pointer to a [`Node`] pointer.
+    ///
+    /// The [`NodeHead`] must have been allocated as part of a [`Node`].
     unsafe fn from_head(head: NonNull<NodeHead<K, V>>) -> NonNull<Self> {
         unsafe { head.byte_sub(offset_of!(Node<K, V>, head)).cast() }
     }
 
     fn layout(levels: usize) -> Result<(Layout, usize), std::alloc::LayoutError> {
-        let layout = Layout::new::<Self>();
+        let layout = Layout::new::<Node<K, V>>();
         let (layout, offset) = layout.extend(Layout::array::<NodePointer<K, V>>(levels)?)?;
         Ok((layout.pad_to_align(), offset))
     }
 }
 
-impl<K, V> ForwardList<K, V> for NonNull<Node<K, V>> {
+impl<K, V> NodePtrExt<K, V> for NonNull<Node<K, V>> {
     unsafe fn forward_list<'a>(self) -> &'a [NodePointer<K, V>] {
         unsafe { NodeHead::forward_list_inner(self.into_head()) }
     }
@@ -165,9 +173,6 @@ impl<K, V> ForwardList<K, V> for NonNull<Node<K, V>> {
     unsafe fn forward_list_mut<'a>(self) -> &'a mut [NodePointer<K, V>] {
         unsafe { NodeHead::forward_list_mut_inner(self.into_head()) }
     }
-}
-
-impl<K, V> NodePtrExt<K, V> for NonNull<Node<K, V>> {
     unsafe fn into_head(self) -> NonNull<NodeHead<K, V>> {
         unsafe { self.byte_add(offset_of!(Node<K, V>, head)).cast() }
     }
@@ -180,54 +185,50 @@ impl<K, V> NodePtrExt<K, V> for NonNull<Node<K, V>> {
     }
 }
 
-// impl<K, V> std::fmt::Display for Node<K, V>
-// where
-//     K: std::fmt::Debug,
-//     V: std::fmt::Debug,
-// {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.write_str(format!("({:?}, {:?})", self.key, self.value).as_str())
-//     }
-// }
-
+/// This is an implementation of the skip-list data structure from
+/// [Pugh (1990)](https://doi.org/10.1145/78973.78977) in Rust.
+///
+/// TODO: finish this
 pub struct SkipList<K, V> {
     len: usize,
     level: usize,
     head: NonNull<NodeHead<K, V>>,
 }
 
-/// Private fields
 impl<K, V> SkipList<K, V> {
     const MAX_LEVEL: usize = 29;
-    const P: f64 = 0.2;
+    const P: f64 = 0.25;
 
+    /// Returns a random level sampled from a geometric distribution, clamped at `MAX_LEVEL`.
     fn random_level(&mut self) -> usize {
-        let mut new_level = 1;
-        while rand::random::<f64>() < Self::P {
-            new_level += 1;
-        }
-
-        new_level.min(Self::MAX_LEVEL)
+        let u: f64 = rand::random();
+        let level = (u.ln() / Self::P.ln()) as usize + 1;
+        level.min(Self::MAX_LEVEL)
     }
 }
 
 impl<K, V> SkipList<K, V> {
+    /// Creates an empty skip list.
     pub fn new() -> Self {
         SkipList {
             len: 0,
-            level: 0,
+            level: 1,
+            // TODO: Further optimization: place NodeHead after the `level` field
             head: NodeHead::new(Self::MAX_LEVEL).unwrap(),
         }
     }
 
+    /// Returns the number of items in the list.
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns the current number of levels in the skip list.
     pub fn level(&self) -> usize {
-        self.level.max(1)
+        self.level
     }
 
+    /// Returns true if the list is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -258,7 +259,6 @@ where
                         temp += &format!("-> {:?}", node.key);
                     }
                     temp += "-> None";
-
                     acc + &temp + "\n"
                 })
                 .as_str(),
@@ -269,8 +269,15 @@ where
 impl<K, V> SkipList<K, V>
 where
     K: Ord + Eq,
-    V: Unpin,
 {
+    /// Inserts a key-value pair into the map.
+    ///
+    /// If the map did not have this key present, [`None`] is returned.
+    ///
+    /// If the map did have this key present, the value is updated, and the old
+    /// value is returned. The key is not updated, though; this matters for
+    /// types that can be `==` without being identical. See [std::collections]
+    /// for more details.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         // TODO make array
         let mut update = vec![self.head; Self::MAX_LEVEL];
@@ -279,7 +286,7 @@ where
         let mut x = self.head;
 
         for i in (0..level).rev() {
-            while let Some(next_node) = unsafe { x.forward_list() }[i] {
+            while let Some(next_node) = unsafe { *x.forward_list().get_unchecked(i) } {
                 if unsafe { Node::from_head(next_node).as_ref() }.key < key {
                     x = next_node;
                 } else {
@@ -290,14 +297,13 @@ where
             update[i] = x;
         }
 
-        if let Some( x) = unsafe { x.forward_list() }[0]
+        if let Some(x) = unsafe { *x.forward_list().get_unchecked(0) }
             && unsafe { Node::from_head(x).as_ref() }.key == key
         {
             unsafe {
                 let x: &mut Node<K, V> = Node::from_head(x).as_mut();
                 let old_value = mem::replace(&mut x.value, value);
                 Some(old_value)
-                // TODO: return old value
             }
         } else {
             let new_level = self.random_level();
@@ -314,15 +320,13 @@ where
 
             let new_node = Node::new(key, value, new_level);
             for i in 0..new_level {
-                let target_node = update[i];
-                // println!(
-                //     "level {i} new_level {new_level}\nis header {}\n{}",
-                //     target_list.as_ptr() == self.forward.as_ptr(),
-                //     target_list.display_forward()
-                // );
+                let target_node = *unsafe { update.get_unchecked(i) };
+
                 unsafe {
-                    new_node.forward_list_mut()[i] = target_node.forward_list()[i];
-                    target_node.forward_list_mut()[i] = Some(new_node.into_head());
+                    *new_node.forward_list_mut().get_unchecked_mut(i) =
+                        *target_node.forward_list().get_unchecked(i);
+                    *target_node.forward_list_mut().get_unchecked_mut(i) =
+                        Some(new_node.into_head());
                 }
             }
             self.len += 1;
@@ -330,6 +334,7 @@ where
         }
     }
 
+    /// Returns a reference to the value corresponding to the key.
     pub fn get<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
@@ -340,7 +345,8 @@ where
         let mut x = self.head;
 
         for i in (0..level).rev() {
-            while let Some(next_node) = unsafe { x.forward_list() }[i] {
+            // SAFETY: `x` is a valid `NodeHead` with a forward list
+            while let Some(next_node) = unsafe { *x.forward_list().get_unchecked(i) } {
                 if unsafe { Node::from_head(next_node).as_ref() }.key.borrow() < key {
                     x = next_node;
                 } else {
@@ -351,6 +357,7 @@ where
 
         match unsafe { x.forward_list() }[0] {
             Some(x) => {
+                // Safety: All nodes after the sentinel node are instances of [`Node`]
                 let node = unsafe { Node::from_head(x).as_ref() };
                 if node.key.borrow() == key {
                     Some(&node.value)
@@ -362,9 +369,12 @@ where
         }
     }
 
-    pub fn delete(&mut self, key: K) -> Option<V>
+    /// Deletes a key from the map, returning the value at the key if the key was found in the map.
+    /// Returns [`None`] otherwise.
+    pub fn delete<Q>(&mut self, key: &Q) -> Option<V>
     where
-        V: Unpin,
+        K: Borrow<Q>,
+        Q: Ord + Eq + ?Sized,
     {
         let mut update = vec![self.head; Self::MAX_LEVEL];
         let level = self.level();
@@ -372,8 +382,12 @@ where
         let mut x = self.head;
 
         for i in (0..level).rev() {
-            while let Some(next_node) = unsafe { x.forward_list() }[i] {
-                if unsafe { Node::from_head(next_node).as_ref() }.key < key {
+            // SAFETY: `self.head` is a valid `NodeHead` AND all children are recursively guaranteed
+            // to be valid `Node`s
+            while let Some(next_node) = unsafe { *x.forward_list().get_unchecked(i) } {
+                // SAFETY: Only the sentinel node is only a `NodeHead`, all other `NodeHead`s are
+                // also `Node`s.
+                if unsafe { Node::from_head(next_node).as_ref() }.key.borrow() < key {
                     x = next_node;
                 } else {
                     break;
@@ -383,18 +397,31 @@ where
             update[i] = x;
         }
 
-        if let Some(x) = unsafe { x.forward_list() }[0]
-            && unsafe { Node::from_head(x).as_ref() }.key == key
+        // SAFETY: From previous constriants, `x` is a valid `NodeHead`
+        if let Some(x) = unsafe { *x.forward_list().get_unchecked(0) }
+            // SAFETY: `x` cannot be the sentinel head, therefore it must also be a `Node`
+            && unsafe { Node::from_head(x).as_ref() }.key.borrow() == key
         {
             for i in 0..level {
-                let target_node = &mut unsafe { update[i].forward_list_mut() }[i];
+                // SAFETY: `update` contains all valid nodes
+                let source = unsafe { update.get_unchecked(i) };
+                let target_node = unsafe { source.forward_list_mut().get_unchecked_mut(i) };
                 if let Some(t) = target_node
                     && t.as_ptr() == x.as_ptr()
                 {
-                    let _ = mem::replace(target_node, unsafe { x.forward_list() }[i]);
+                    // SAFETY: `x` is a valid node
+                    let new = unsafe { *x.forward_list().get_unchecked(i) };
+
+                    let _ = mem::replace(target_node, new);
                 } else {
                     break;
                 }
+            }
+
+            while self.level > 1
+                && unsafe { self.head.forward_list().get_unchecked(self.level - 1) }.is_none()
+            {
+                self.level -= 1;
             }
 
             // SAFETY: All `NodeHead` instances here are part of a `Node`.
@@ -410,13 +437,6 @@ where
                 let layout = node.layout();
                 std::alloc::dealloc(node.as_ptr().cast(), layout);
 
-                // TODO: a better way?
-                self.level = self
-                    .head
-                    .forward_list()
-                    .iter()
-                    .filter(|e| e.is_some())
-                    .count();
                 self.len -= 1;
                 Some(value)
             }
@@ -428,6 +448,7 @@ where
 
 impl<K, V> Drop for SkipList<K, V> {
     fn drop(&mut self) {
+        // SAFETY: Head is always a valid `NodeHead`
         let mut maybe_next_node = unsafe { self.head.forward_list() }[0];
         while let Some(node_ptr) = maybe_next_node {
             // SAFETY: Every NodeHead that isnt `self.head` is also a `Node`
@@ -458,8 +479,6 @@ impl<K, V> Default for SkipList<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{RngExt, SeedableRng as _, seq::IteratorRandom};
-    use std::collections::HashMap;
 
     #[test]
     fn node_layout() {
@@ -508,8 +527,8 @@ mod tests {
         assert!(default_list.is_empty());
         assert_eq!(default_list.len(), 0);
 
-        default_list.insert(3i32, "asdf".into());
-        default_list.insert(3i32, "fdsa".into());
+        default_list.insert(3i32, "one".into());
+        default_list.insert(3i32, "two".into());
         default_list.insert(3i32, "hello, world!".into());
         assert!(!default_list.is_empty());
         assert_eq!(default_list.len(), 1);
@@ -520,64 +539,72 @@ mod tests {
     }
 
     #[test]
-    fn random_inserts() {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(1284);
-        let mut rng = rand::rng();
-        let mut list = SkipList::new();
+    fn test_insert_many() {
+        let mut list: SkipList<String, u64> = SkipList::new();
+        let starting_value = 3u64;
 
-        let items = 10;
-
-        // TODO Fix collisions
-        let mut random_items = HashMap::with_capacity(items);
-        for i in 0..items {
-            let key: u64 = rng.random_range(0..30);
-            random_items.insert(key, i);
-            list.insert(key, i);
-            eprintln!("{list}");
+        for i in 0..100 {
+            let value = starting_value + i * 67;
+            let key = value.to_string();
+            list.insert(key.clone(), value);
+            assert!(list.get(&key).is_some());
         }
 
-        // Verify we can find all the items
-        random_items
-            .iter()
-            .choose(&mut rng)
-            .into_iter()
-            .for_each(|(key, value)| {
-                let result = list.get(key);
-                let found_value = result.expect("list should contain this key");
-                assert_eq!(*value, *found_value);
-            });
+        // Now we let list drop without any `delete`ing and see if miri complains
+    }
 
-        let mut deleted_items = Vec::with_capacity(items);
+    #[test]
+    fn test_insert_and_remove_many() {
+        let mut list: SkipList<String, u64> = SkipList::new();
+        let starting_value = 3u64;
+        let how_many = 10;
 
-        // delete them one at a time
+        for i in 0..how_many {
+            let value = starting_value + i * 3737;
+            let key = value.to_string();
+            list.insert(key.clone(), value);
+            assert_eq!(list.get(&key).unwrap(), &value);
+            assert_eq!(list.len() as u64, i + 1);
+        }
 
-        eprintln!("{list}");
-        let total_items = random_items.len();
-        random_items.into_iter().for_each(|item| {
-            deleted_items.push(item);
-            eprintln!("deleting {}", item.0);
-            list.delete(item.0).unwrap();
-            eprintln!("deleted {}", item.0);
-            eprintln!("{list}");
+        for i in 0..how_many {
+            let expected_value = starting_value + i * 3737;
+            let key = expected_value.to_string();
+            assert_eq!(list.get(&key).unwrap(), &expected_value);
+        }
 
-            for deleted in deleted_items.iter() {
-                assert!(list.get(&deleted.0).is_none(), "item still exists");
-                assert_eq!(list.len(), total_items - deleted_items.len());
-            }
-        });
+        for i in 0..how_many {
+            let expected_value = starting_value + i * 3737;
+            let key = expected_value.to_string();
+            assert_eq!(list.delete(&key).unwrap(), expected_value);
+            assert_eq!(list.len() as u64, how_many - 1 - i);
+        }
 
-        eprintln!("{list}");
-        //panic!("WHAT IS HAPPENING");
-
-        // empty list
         assert_eq!(list.len(), 0);
-        assert!(list.is_empty());
         assert_eq!(list.level(), 1);
     }
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn super_alignment() {
+        #[repr(C, align(128))]
+        #[derive(Debug, PartialEq, Eq)]
+        struct Value {
+            pub value: u64,
+            pub data: [u64; 100]
+        }
+
+        let mut list: SkipList<String, Value> = SkipList::new();
+        for i in 0..10 {
+            list.insert(i.to_string(), Value { value: i, data: [0; 100] });
+        }
+
+        for i in 0..10 {
+            let key = i.to_string();
+            assert_eq!(list.delete(&key).unwrap(), Value { value: i, data: [0; 100] });
+            assert_eq!(list.len() as u64, 9 - i);
+        }
+
+        assert_eq!(list.len(), 0);
+        assert_eq!(list.level(), 1);
     }
 }
